@@ -3,64 +3,61 @@ import requests
 import time
 import sys
 
-# Change this to your PC's actual local IP address
-PC_IP_ADDRESS = "192.168.1.50"  
+# 1. Configuration Settings
+PC_IP_ADDRESS = "192.168.1.50"  # <-- Change this to match your home PC IP!
 SERVER_URL = f"http://{PC_IP_ADDRESS}:5000/predict"
 
-print("Step 1: Attempting to open the camera...")
-cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-
-print("Step 2: Configuring camera settings...")
-cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# 2. Open standard input stream instead of a direct hardware node index
+# This intercepts a clean, system-pre-decoded MJPEG video pipe
+cap = cv2.VideoCapture("-") 
 
 if not cap.isOpened():
-    print("❌ ERROR: Could not open the camera interface at all.")
+    print("❌ ERROR: Could not open the video pipe stream.")
     sys.exit()
-else:
-    print("✅ Camera interface opened successfully!")
 
-print("Step 3: Entering streaming loop. Press 'q' to quit.")
+print("Raspberry Pi streaming client started. Press 'q' to quit.")
+
 while cap.isOpened():
     start_time = time.time()
     
-    # 1. Grab Frame
+    # This reads pre-formatted, clean frames out of the system pipe safely!
     success, frame = cap.read()
-    if not success or frame is None:
-        print("⚠️ Camera warning: Frame is empty or failing to read. Retrying...")
-        time.sleep(0.5)
-        continue
     
-    # 2. Compress Frame
-    success_encode, img_encoded = cv2.imencode('.jpg', frame)
-    if not success_encode:
-        print("❌ ERROR: Failed to compress frame to JPEG.")
+    if not success or frame is None:
+        print("Waiting for camera frame stream...")
+        time.sleep(0.05)
         continue
 
-    # 3. Send to PC Server
+    # 3. Compress the valid frame to JPEG bytes to send it over Wi-Fi
+    _, img_encoded = cv2.imencode('.jpg', frame)
+    
     try:
-        print(f"Sending frame to server at {SERVER_URL}...", end="\r")
-        response = requests.post(SERVER_URL, files={"image": img_encoded.tobytes()}, timeout=3)
+        # 4. Send the image over the network to your home PC's GPU
+        response = requests.post(SERVER_URL, files={"image": img_encoded.tobytes()}, timeout=2)
         
         if response.status_code == 200:
             data = response.json()
-            # Draw boxes
+
+            # 5. Loop through predictions and paint boxes
             for pred in data["predictions"]:
                 x1, y1, x2, y2 = pred["box"]
+                label = f"{pred['class']} {pred['confidence']:.2f}"
+                
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, pred['class'], (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        else:
-            print(f"\n❌ Server returned an error status code: {response.status_code}")
-            
-    except requests.exceptions.Timeout:
-        print("\n❌ Network Error: Request timed out. The PC server is taking too long or isn't responding.")
-    except requests.exceptions.ConnectionError:
-        print("\n❌ Network Error: Could not reach the PC server. Check the IP address or your Wi-Fi network.")
+                cv2.putText(frame, label, (x1, y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        cv2.putText(frame, "Connecting to PC Server...", (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-    cv2.imshow("Debug Window", frame)
+    # Frame rate calculation display
+    fps = 1.0 / (time.time() - start_time)
+    cv2.putText(frame, f"Network FPS: {fps:.1f}", (20, 450), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+    cv2.imshow("Raspberry Pi Client Window", frame)
+    
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
